@@ -107,9 +107,11 @@ COPY --from=frontend-builder /app/frontend/node_modules /app/frontend/node_modul
 COPY skills/public ./skills/public
 
 # ── PacGate agent templates (baked in as defaults, overridable via mount) ─────
-COPY .deer-flow/users/default/agents ./agents-templates
+# Agent SOUL.md + config.yaml files are gitignored on the host (.deer-flow/),
+# so they are NOT copied from the host. Instead, create a placeholder directory
+# and let the entrypoint copy from the mounted /app/agents volume at runtime.
+RUN mkdir -p /app/agents-templates
 
-# ── nginx config ─────────────────────────────────────────────────────────────
 COPY docker/nginx/nginx.conf /etc/nginx/nginx.conf.template
 
 # ── Entrypoint: starts backend + frontend + nginx ─────────────────────────────
@@ -125,6 +127,7 @@ ENV DEER_FLOW_PROJECT_ROOT=/app \
     DEER_FLOW_EXTENSIONS_CONFIG_PATH=/app/config/extensions_config.json \
     PYTHONPATH=/app/backend
 
+# Copy entrypoint script (ensure LF line endings)
 COPY docker/pacgate-entrypoint.sh /usr/local/bin/pacgate-entrypoint.sh
 RUN chmod +x /usr/local/bin/pacgate-entrypoint.sh
 

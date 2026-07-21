@@ -24,9 +24,11 @@ if [ -f /app/config/.env ]; then
 fi
 
 # Initialize agent templates if /app/agents is empty
-if [ ! -d /app/agents/sylvie ] && [ -d /app/agents-templates ]; then
+if [ ! -d /app/agents/sylvie ] && [ -d /app/agents-templates/sylvie ]; then
     echo "Initializing agent templates from baked-in defaults..."
-    cp -r /app/agents-templates /app/agents
+    cp -r /app/agents-templates/* /app/agents/
+elif [ ! -d /app/agents/sylvie ]; then
+    echo "WARNING: No agent templates found in /app/agents. Please mount .deer-flow/users/default/agents/ as /app/agents."
 fi
 
 # Link .deer-flow agents if the data dir exists
