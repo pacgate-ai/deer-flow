@@ -67,7 +67,7 @@ metadata:
 
 ## 一、前置：载入 playbook + 立场 + 轮次 + 架构
 
-读文件前先读 `~/.claude/.../vcpe-legal/CLAUDE.md`（百宸 VCPE playbook）。缺失则提示 `cold-start-interview` 或"临时模式"。
+读文件前先读 VCPE playbook，加载顺序：`.deer-flow/playbooks/vcpe-playbook.md`（本所专属，存在则覆盖）→ OpenViking `find "VCPE 投融资 playbook"`（若已入库）→ 缺失则提示 `cold-start-interview` 或"临时模式"。
 
 - **立场：** 投资人 / 公司 / 创始人——决定全部条款方向（如优先清算权倍数、防稀释强度、对赌松紧）。
 - **轮次：** 天使/Pre-A/A/B/C——决定条款繁简与前轮兼容义务。
