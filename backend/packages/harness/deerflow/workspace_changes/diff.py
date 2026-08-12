@@ -109,6 +109,16 @@ def get_changed_paths(before: WorkspaceSnapshot, after: WorkspaceSnapshot) -> se
     return changed
 
 
+def get_changed_output_paths(before: WorkspaceSnapshot, after: WorkspaceSnapshot) -> list[str]:
+    """Return created or modified regular files under the outputs root."""
+    paths: list[str] = []
+    for path in sorted(get_changed_paths(before, after)):
+        snapshot = after.files.get(path)
+        if snapshot is not None and snapshot.root == "outputs" and not snapshot.symlink:
+            paths.append(path)
+    return paths
+
+
 def _status(
     before_file: FileSnapshot | None,
     after_file: FileSnapshot | None,
@@ -198,12 +208,12 @@ def _snapshot_text(file: FileSnapshot | None) -> str | None:
 def _count_diff_lines(lines: list[str]) -> tuple[int, int]:
     additions = 0
     deletions = 0
-    for line in lines:
-        # Unified-diff file headers are "+++ " / "--- " with a trailing space;
-        # a bare "+++"/"---" prefix would also swallow real content lines whose
-        # text begins with those sequences (e.g. an added line "+++foo").
-        if line.startswith("+++ ") or line.startswith("--- "):
-            continue
+    # difflib.unified_diff always emits the two file headers ("--- a/…" then
+    # "+++ b/…") first; skip them by position. A prefix test can't tell them
+    # apart from a hunk-body line whose content starts with "-- "/"++ " (e.g. a
+    # deleted SQL comment "-- get users" becomes the diff line "--- get users"),
+    # which would then be dropped from the count.
+    for line in lines[2:]:
         if line.startswith("+"):
             additions += 1
         elif line.startswith("-"):
