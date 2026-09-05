@@ -1,0 +1,16 @@
+# PacGate-Law override — disable provisioner (K8s sandbox not needed;
+# we use LocalSandboxProvider). The provisioner requires a kubeconfig file
+# at ~/.kube/config which doesn't exist on this Windows host, causing a
+# restart loop. This override prevents it from starting.
+#
+# Also adds a dedicated documents volume mount so agent-generated files
+# (PDFs, DOCX, XLSX) are permanently accessible from the Windows host at:
+#   C:\Users\pacga\github-pr\deer-flow\.deer-flow\documents\
+services:
+  provisioner:
+    profiles:
+      - k8s-sandbox
+
+  gateway:
+    volumes:
+      - ${DEER_FLOW_HOME}/documents:/mnt/documents

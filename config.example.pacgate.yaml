@@ -1,0 +1,260 @@
+# PacGate-Law (百宸法律 AI) — Client Configuration Template
+#
+# INSTRUCTIONS:
+#   1. Copy this file to config.yaml
+#   2. Fill in your Ollama model names and API endpoints
+#   3. Set environment variables in .env (API keys, endpoints)
+#   4. Place in the same directory as docker-compose.prod.yaml
+#
+# This template contains all PacGate-specific sections pre-configured.
+# The Docker image (ghcr.io/jzkk720/deer-flow-pacgate) includes all 34 skills,
+# 3-axis routing middleware, and 5 hard gates — they are activated by this config.
+
+config_version: 26
+
+# ============================================================================
+# Logging
+# ============================================================================
+
+log_level: info
+
+# ============================================================================
+# Models — 3-tier routing (all point to local Ollama by default)
+# ============================================================================
+
+models:
+  - name: main
+    display_name: Main Tier
+    description: "复杂推理 / 高风险法律分析 (合伙人级)"
+    use: langchain_openai:ChatOpenAI
+    model: gemma4:e2b-it-q8_0
+    api_key: $PACGATE_MAIN_API_KEY
+    api_base: $PACGATE_MAIN_API_BASE
+    timeout: 600.0
+    max_retries: 2
+    supports_thinking: false
+    supports_vision: false
+
+  - name: mid
+    display_name: Mid Tier
+    description: "结构化抽取 / 脱敏关卡 / 报告起草 (主办级)"
+    use: langchain_openai:ChatOpenAI
+    model: gemma4:e2b-it-q8_0
+    api_key: $PACGATE_MID_API_KEY
+    api_base: $PACGATE_MID_API_BASE
+    timeout: 600.0
+    max_retries: 2
+    supports_thinking: false
+    supports_vision: false
+
+  - name: low
+    display_name: Low Tier
+    description: "分类 / 格式化 / 引文查找 (助理级)"
+    use: langchain_openai:ChatOpenAI
+    model: gemma4:e2b-it-q8_0
+    api_key: $PACGATE_LOW_API_KEY
+    api_base: $PACGATE_LOW_API_BASE
+    timeout: 300.0
+    max_retries: 2
+    supports_thinking: false
+    supports_vision: false
+
+# ============================================================================
+# Sandbox — local filesystem (no K8s provisioner needed)
+# ============================================================================
+
+sandbox:
+  use: local
+  config:
+    root_dir: /mnt/documents
+    allowed_extensions:
+      - .md
+      - .txt
+      - .pdf
+      - .docx
+      - .xlsx
+      - .pptx
+      - .csv
+      - .json
+      - .yaml
+      - .html
+
+# ============================================================================
+# Skills — container path (baked into the Docker image)
+# ============================================================================
+
+skills:
+  container_path: /app/skills/public
+  deferred_discovery: true
+
+# ============================================================================
+# Memory — deermem (local, CJK-aware char token counting)
+# ============================================================================
+
+memory:
+  enabled: true
+  mode: tool
+  manager_class: deermem
+
+# ============================================================================
+# Agents API — enable custom agent management
+# ============================================================================
+
+agents_api:
+  enabled: true
+
+# ============================================================================
+# ACP Agents — hermes (config-only, no external process)
+# ============================================================================
+
+acp_agents:
+  hermes:
+    description: "Hermes integration agent (config-only)"
+    mode: config-only
+
+# ============================================================================
+# Subagents — 7 A-series (Big Law workflow pipeline)
+# ============================================================================
+
+subagents:
+  custom_agents:
+    matter-manager:
+      description: "A1 事项管理 — 分派条线任务、进度台账、执行摘要"
+      system_prompt: |
+        你是 A1 事项管理 Agent（Matter Manager），对应 Big Law 的 project manager。
+        职责：接收合伙人指令 → 分派条线任务 → 跟踪进度 → 汇总执行摘要。
+      model: main
+      max_turns: 80
+      timeout_seconds: 1800
+
+    intake-conflicts:
+      description: "A2 立案利冲 — 结构化访谈 → 企查查 + 内部档案利冲 → 关联图谱"
+      system_prompt: |
+        你是 A2 立案利冲 Agent，对应 Big Law 的 intake & conflicts department。
+      model: mid
+      max_turns: 60
+      timeout_seconds: 1200
+
+    research:
+      description: "A3 法规检索 — 元典/北大法宝/SEC EDGAR 法规案例检索"
+      system_prompt: |
+        你是 A3 法规检索 Agent，负责法规与案例检索。
+      model: mid
+      max_turns: 40
+      timeout_seconds: 600
+
+    cite-checker:
+      description: "A5 引文核验 — 法规引用核验 + 来源标注 + 批量退回"
+      system_prompt: |
+        你是 A5 引文核验 Agent，对应 Big Law 的校对席。
+      model: low
+      max_turns: 30
+      timeout_seconds: 300
+
+    devils-advocate:
+      description: "A6 反方复核 — 完备性挑战 + 逻辑漏洞 + 盲区补缺"
+      system_prompt: |
+        你是 A6 反方复核 Agent，对应 Big Law 的 devil's advocate。
+      model: main
+      max_turns: 20
+      timeout_seconds: 300
+
+    doc-pipeline:
+      description: "A7 文档管线 — OCR + 分类 + 结构化抽取 + 表格审查 + 脱敏"
+      system_prompt: |
+        你是 A7 文档管线 Agent，负责 OCR、分类、结构化抽取、表格审查和脱敏。
+      model: low
+      max_turns: 60
+      timeout_seconds: 1200
+
+    report-assembly:
+      description: "A8 报告装配 — 11章尽调报告装配 + docx生成"
+      system_prompt: |
+        你是 A8 报告装配 Agent，负责将已核验成果装配为 11 章尽调报告。
+      model: mid
+      max_turns: 40
+      timeout_seconds: 600
+
+# ============================================================================
+# Scheduler — enabled for scheduled tasks (regulation-sync cron)
+# ============================================================================
+
+scheduler:
+  enabled: true
+  poll_interval_seconds: 5
+  lease_seconds: 120
+  max_concurrent_runs: 3
+  min_once_delay_seconds: 60
+
+# ============================================================================
+# Run Ownership
+# ============================================================================
+
+run_ownership:
+  lease_seconds: 30
+  grace_seconds: 10
+  heartbeat_enabled: false
+
+# ============================================================================
+# Guardrails
+# ============================================================================
+
+guardrails:
+  enabled: true
+
+# ============================================================================
+# PacGate — 3-axis routing + 5 hard gates (Big Law workflow enforcement)
+# ============================================================================
+
+pacgate:
+  routing:
+    axis_a:
+      enabled: true
+      default_tier: "associate"
+      tier_skill_prefix: "pacgate-tier-"
+    axis_b:
+      enabled: true
+      local_only_tag: "local-only"
+      deid_required_tag: "deid-required"
+      local_model_patterns:
+        - "ollama"
+        - "localhost:11434"
+    axis_c:
+      enabled: true
+      high_risk_tag: "high-risk"
+      low_confidence_threshold: 0.6
+  hard_gates:
+    gate1_conflicts_clear:
+      enabled: true
+      intake_skill: "intake-conflicts"
+      matter_work_skills:
+        - "dd-report-assembly"
+        - "regulation-research"
+        - "offshore-dd"
+        - "nda-review"
+        - "contract-review"
+        - "ma-agreement-review"
+        - "vcpe-financing-suite"
+        - "corporate-equity"
+        - "finance-tax"
+        - "labor-hr"
+        - "regulatory-compliance"
+      state_key: "pacgate_conflicts_cleared"
+    gate2_deid_before_cloud:
+      enabled: false
+      deid_skill: "cold-start-interview"
+      state_key: "pacgate_deid_passed"
+    gate3_cite_verified:
+      enabled: true
+      report_path_patterns:
+        - "**/dd-report*"
+        - "**/尽职调查*"
+        - "**/dd_report*"
+      required_marker: "<!-- pacgate:cite-verified:"
+      write_tool_names:
+        - "write_file"
+        - "writeFile"
+    gate4_grade_is_advisory:
+      enabled: false
+    gate5_partner_signoff:
+      enabled: false
