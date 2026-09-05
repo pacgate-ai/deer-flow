@@ -32,6 +32,7 @@ from app.gateway.routers import (
     mcp_tasks,
     memory,
     models,
+    matters,
     runs,
     scheduled_tasks,
     skills,
@@ -804,6 +805,9 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
 
     # Skills API is mounted at /api/skills
     app.include_router(skills.router)
+
+    # PacGate matter management API is mounted at /api/matters
+    app.include_router(matters.router)
 
     # First-party integrations API is mounted at /api/integrations
     app.include_router(integrations.router)
