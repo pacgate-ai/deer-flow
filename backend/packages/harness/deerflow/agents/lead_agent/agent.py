@@ -669,6 +669,33 @@ def build_middlewares(
 
         middlewares.append(TokenBudgetMiddleware.from_config(token_budget_config))
 
+    # PacGate middlewares — 3-axis routing (advisory, wrap_model_call) and
+    # hard gates (enforcement, wrap_tool_call). Placed before custom/extension
+    # middlewares so they sit just before ClarificationMiddleware in the chain.
+    # Framework rule: first in list = outermost, so the routing middleware
+    # (advisory context injection) is added before the hard-gates middleware
+    # (tool-call enforcement).
+    pacgate_config = getattr(resolved_app_config, "pacgate", None)
+    if pacgate_config is not None:
+        from deerflow.agents.middlewares.pacgate_routing_middleware import PacGateRoutingMiddleware
+        from deerflow.agents.middlewares.pacgate_hard_gates_middleware import PacGateHardGatesMiddleware
+
+        if (
+            pacgate_config.routing.axis_a.enabled
+            or pacgate_config.routing.axis_b.enabled
+            or pacgate_config.routing.axis_c.enabled
+        ):
+            middlewares.append(PacGateRoutingMiddleware(
+                app_config=resolved_app_config,
+                pacgate_config=pacgate_config,
+                skills_container_path=resolved_app_config.skills.container_path,
+            ))
+        if (
+            pacgate_config.hard_gates.gate1_conflicts_clear.enabled
+            or pacgate_config.hard_gates.gate3_cite_verified.enabled
+        ):
+            middlewares.append(PacGateHardGatesMiddleware(pacgate_config=pacgate_config))
+
     # Inject custom middlewares before ClarificationMiddleware
     if custom_middlewares:
         middlewares.extend(custom_middlewares)
