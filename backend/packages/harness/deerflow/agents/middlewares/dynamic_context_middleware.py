@@ -24,6 +24,18 @@ Date-update format:
     <system-reminder>
     <current_date>2026-05-09, Saturday</current_date>
     </system-reminder>
+
+By default the injected date follows the server's local timezone. Set the
+``DEER_FLOW_DATE_TIMEZONE`` environment variable to an IANA timezone name (for
+example ``Asia/Shanghai``) when the host clock runs UTC but the conversation
+date should follow another zone. Invalid values log a warning and fall back to
+the server-local timezone.
+
+The knob is deliberately an environment variable rather than a config field:
+it is read directly by both date-context middlewares at injection time, so an
+operator can point a container at another zone without mounting a config.yaml,
+and the lead and built-in-subagent paths can never drift apart on which zone
+they render.
 """
 
 from __future__ import annotations
@@ -31,16 +43,22 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
+import posixpath
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, tzinfo
 from typing import TYPE_CHECKING, override
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from deerflow_extension_api import ContentKind, provenance_kwargs
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.runtime import Runtime
 
 from deerflow.runtime.context_keys import CURRENT_RUN_PRE_EXISTING_MESSAGE_IDS_KEY
+from deerflow.runtime.user_context import resolve_runtime_user_id
+from deerflow.utils.messages import INJECTED_USER_MESSAGE_ID_SUFFIX, strip_injected_user_message_id_suffix
 
 if TYPE_CHECKING:
     from deerflow.config.app_config import AppConfig
@@ -60,6 +78,124 @@ _DYNAMIC_CONTEXT_REMINDER_KEY = "dynamic_context_reminder"
 # so it is never exposed to user-influenceable memory content.
 _REMINDER_DATE_KEY = "reminder_date"
 _SUMMARY_MESSAGE_NAME = "summary"
+
+# ``INJECTED_USER_MESSAGE_ID_SUFFIX`` / ``strip_injected_user_message_id_suffix``
+# are defined in ``deerflow.utils.messages`` and re-exported here, where the
+# ID-swap they describe actually happens. Existing importers keep working.
+__all__ = [
+    "INJECTED_USER_MESSAGE_ID_SUFFIX",
+    "DynamicContextMiddleware",
+    "SubagentDateContextMiddleware",
+    "is_dynamic_context_reminder",
+    "strip_injected_user_message_id_suffix",
+]
+
+
+_DATE_TIMEZONE_ENV = "DEER_FLOW_DATE_TIMEZONE"
+
+
+def _date_timezone() -> tzinfo | None:
+    """Resolve the configured IANA timezone for injected dates, or None for server-local."""
+    raw = os.environ.get(_DATE_TIMEZONE_ENV, "").strip()
+    if not raw:
+        return None
+    try:
+        return ZoneInfo(raw)
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        # Only configuration-shaped failures degrade to server-local. A
+        # BlockingError-style guard (blocking-I/O regression suite) or any
+        # unrelated exception must propagate instead of being misread as an
+        # invalid timezone name.
+        logger.warning("Invalid %s=%r; falling back to the server-local timezone", _DATE_TIMEZONE_ENV, raw)
+        return None
+
+
+def _server_local_timezone_name() -> str | None:
+    """IANA key of the server's local zone, or ``None`` when not resolvable.
+
+    ``datetime.now().astimezone().tzinfo`` is always a plain fixed-offset
+    ``datetime.timezone`` (an abbreviation such as ``CST`` is ambiguous and
+    DST-churns), never a ``zoneinfo.ZoneInfo`` carrying an IANA key. The key is
+    instead read from the platform: the ``TZ`` environment variable when it
+    names a real zone, or the ``/etc/localtime`` symlink target on
+    Linux/macOS. Only the symlink's *direct* target is read (``os.readlink``),
+    not a fully resolved path: on macOS ``/etc/localtime`` points into
+    ``/var/db/timezone/zoneinfo/`` whose own directory symlink resolves to a
+    versioned path (``.../tz/<version>/zoneinfo/...``) that would defeat any
+    fixed prefix list. The zone key is whatever follows the last ``/zoneinfo/``
+    segment. Hosts with no symlink (Windows, stripped containers) return
+    ``None``.
+    """
+    tz_env = os.environ.get("TZ", "").strip()
+    if tz_env:
+        try:
+            return ZoneInfo(tz_env).key
+        except (ZoneInfoNotFoundError, ValueError, OSError):
+            pass
+    try:
+        target = os.readlink("/etc/localtime")
+    except OSError:
+        return None
+    if not target.startswith("/"):
+        target = posixpath.normpath(posixpath.join("/etc", target))
+    zoneinfo_marker = "/zoneinfo/"
+    marker_index = target.rfind(zoneinfo_marker)
+    if marker_index == -1:
+        return None
+    key = target[marker_index + len(zoneinfo_marker) :]
+    if not key or key.startswith("/") or ".." in key:
+        return None
+    return key
+
+
+def _server_local_utc_offset_minutes() -> int:
+    """Current UTC offset of the server's local zone, in minutes."""
+    offset = datetime.now().astimezone().utcoffset()
+    return int(offset.total_seconds() // 60) if offset is not None else 0
+
+
+def _effective_date_timezone_name() -> str:
+    """Stable label of the timezone the injected date actually follows.
+
+    A configured, valid ``DEER_FLOW_DATE_TIMEZONE`` is reported by its IANA
+    key; without one, the server-local zone is reported by its resolved IANA
+    key when the platform exposes it. When no IANA key is recoverable the
+    declaration falls back to a ``server-local(±HH:MM)`` sentinel carrying the
+    current UTC offset - never a bare abbreviation, which would be ambiguous
+    (``CST`` is shared by China, US Central, and Cuba) and would churn across
+    DST. Declaring the effective zone (never a bare ``probed``) lets the
+    assembly descriptor tell deployments that anchor the injected date
+    differently apart.
+    """
+    tz = _date_timezone()
+    if tz is not None:
+        key = getattr(tz, "key", None)
+        if isinstance(key, str) and key:
+            return key
+        return "UTC"
+    local_key = _server_local_timezone_name()
+    if local_key is not None:
+        return local_key
+    offset_minutes = _server_local_utc_offset_minutes()
+    sign = "+" if offset_minutes >= 0 else "-"
+    offset_minutes = abs(offset_minutes)
+    return f"server-local({sign}{offset_minutes // 60:02d}:{offset_minutes % 60:02d})"
+
+
+def _format_current_date() -> str:
+    tz = _date_timezone()
+    now = datetime.now(tz) if tz is not None else datetime.now()
+    return now.strftime("%Y-%m-%d, %A")
+
+
+def _format_current_date_reminder(current_date: str) -> str:
+    return "\n".join(
+        [
+            "<system-reminder>",
+            f"<current_date>{current_date}</current_date>",
+            "</system-reminder>",
+        ]
+    )
 
 
 def _extract_date(content: str) -> str | None:
@@ -120,9 +256,65 @@ def _is_user_injection_target(message: object) -> bool:
     # (id__user__user__user...) and ghost-message re-execution.
     # Using endswith (not substring "in") avoids false positives on IDs that
     # happen to contain "__user" in the middle.
-    if message.id and str(message.id).endswith("__user"):
+    if message.id and str(message.id).endswith(INJECTED_USER_MESSAGE_ID_SUFFIX):
         return False
     return True
+
+
+class SubagentDateContextMiddleware(AgentMiddleware):
+    """Inject hidden current-date context once per built-in subagent execution.
+
+    Built-in subagents need the same temporal anchor as the lead agent, but not
+    its user-memory lookup, frozen-conversation ID swap, or midnight refresh
+    lifecycle. Each subagent graph is one-shot and starts from fresh state, so a
+    single ``before_agent`` update makes the date available before its first
+    model call without coupling the two runtime paths.
+    """
+
+    def release_policy_parameters(self) -> dict[str, object]:
+        """The injected date's effective timezone is this middleware's behaviour identity."""
+        return {"current_date_timezone": _effective_date_timezone_name()}
+
+    @staticmethod
+    def _inject() -> dict:
+        current_date = _format_current_date()
+        reminder = _format_current_date_reminder(current_date)
+        return {
+            "messages": [
+                SystemMessage(
+                    content=reminder,
+                    additional_kwargs={
+                        "hide_from_ui": True,
+                        _DYNAMIC_CONTEXT_REMINDER_KEY: True,
+                        _REMINDER_DATE_KEY: current_date,
+                    },
+                )
+            ]
+        }
+
+    @override
+    def before_agent(self, state, runtime: Runtime) -> dict:
+        return self._inject()
+
+    @override
+    async def abefore_agent(self, state, runtime: Runtime) -> dict | None:
+        # _inject() can resolve DEER_FLOW_DATE_TIMEZONE through ZoneInfo,
+        # which reads the OS zone database (or the tzdata wheel) on a cold
+        # cache. SubagentDateContextMiddleware runs on the async subagent path,
+        # where no assembly observer necessarily warmed that resolution first,
+        # so the injection is offloaded like DynamicContextMiddleware does (see
+        # #3402) to keep filesystem work off the event loop.
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(self._inject),
+                timeout=_INJECT_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            logger.warning(
+                "SubagentDateContextMiddleware: date injection timed out (%.1fs); skipping for this run",
+                _INJECT_TIMEOUT_SECONDS,
+            )
+            return None
 
 
 class DynamicContextMiddleware(AgentMiddleware):
@@ -134,6 +326,16 @@ class DynamicContextMiddleware(AgentMiddleware):
     persists it (same message ID).  The first message is then frozen for the whole
     session — its content never changes again, so the prefix cache can hit on every
     subsequent turn.
+
+    Fallback (missed earlier injection)
+    -----------------------------------
+    If an earlier turn ended without any reminder (e.g. the async ``abefore_agent``
+    degraded path skipped injection on a timeout), the first-injection branch runs
+    on a history that already holds several turns.  The reminder then attaches to
+    the **last** user message instead: the ID-swap's ``{id}__user`` copy is
+    appended by ``add_messages``, so attaching to an earlier message would move
+    that stale prompt ahead of the current question and the model would answer
+    the old prompt as the current turn.
 
     Midnight crossing
     -----------------
@@ -148,7 +350,11 @@ class DynamicContextMiddleware(AgentMiddleware):
         self._agent_name = agent_name
         self._app_config = app_config
 
-    def _build_full_reminder(self) -> tuple[str, str | None]:
+    def release_policy_parameters(self) -> dict[str, object]:
+        """Declare the injected date's effective timezone for assembly identity."""
+        return {"current_date_timezone": _effective_date_timezone_name()}
+
+    def _build_full_reminder(self, runtime: Runtime | None = None) -> tuple[str, str | None]:
         """Return (date_reminder, memory_block | None).
 
         Framework-owned data (date) is separated from user-owned data (memory)
@@ -159,30 +365,24 @@ class DynamicContextMiddleware(AgentMiddleware):
         from deerflow.agents.lead_agent.prompt import _get_memory_context
 
         injection_enabled = self._app_config.memory.injection_enabled if self._app_config else True
-        memory_context = _get_memory_context(self._agent_name, app_config=self._app_config) if injection_enabled else ""
-        current_date = datetime.now().strftime("%Y-%m-%d, %A")
-
-        date_reminder = "\n".join(
-            [
-                "<system-reminder>",
-                f"<current_date>{current_date}</current_date>",
-                "</system-reminder>",
-            ]
+        memory_context = (
+            _get_memory_context(
+                self._agent_name,
+                app_config=self._app_config,
+                user_id=resolve_runtime_user_id(runtime),
+            )
+            if injection_enabled
+            else ""
         )
+        current_date = _format_current_date()
+        date_reminder = _format_current_date_reminder(current_date)
 
         memory_block = memory_context.strip() if memory_context else None
 
         return date_reminder, memory_block
 
     def _build_date_update_reminder(self) -> str:
-        current_date = datetime.now().strftime("%Y-%m-%d, %A")
-        return "\n".join(
-            [
-                "<system-reminder>",
-                f"<current_date>{current_date}</current_date>",
-                "</system-reminder>",
-            ]
-        )
+        return _format_current_date_reminder(_format_current_date())
 
     @staticmethod
     def _make_reminder_and_user_messages(
@@ -209,7 +409,11 @@ class DynamicContextMiddleware(AgentMiddleware):
         stable_id = original.id or str(uuid.uuid4())
         messages: list[SystemMessage | HumanMessage] = []
 
-        reminder_kwargs = {"hide_from_ui": True, _DYNAMIC_CONTEXT_REMINDER_KEY: True}
+        reminder_kwargs = {
+            "hide_from_ui": True,
+            _DYNAMIC_CONTEXT_REMINDER_KEY: True,
+            **provenance_kwargs(ContentKind.MIDDLEWARE_INJECTION, "dynamic_context"),
+        }
         if reminder_date is not None:
             reminder_kwargs[_REMINDER_DATE_KEY] = reminder_date
         messages.append(
@@ -225,26 +429,30 @@ class DynamicContextMiddleware(AgentMiddleware):
                 HumanMessage(
                     content=memory_content,
                     id=f"{stable_id}__memory",
-                    additional_kwargs={"hide_from_ui": True, _DYNAMIC_CONTEXT_REMINDER_KEY: True},
+                    additional_kwargs={
+                        "hide_from_ui": True,
+                        _DYNAMIC_CONTEXT_REMINDER_KEY: True,
+                        **provenance_kwargs(ContentKind.MEMORY, "dynamic_context_memory"),
+                    },
                 )
             )
 
         messages.append(
             HumanMessage(
                 content=original.content,
-                id=f"{stable_id}__user",
+                id=f"{stable_id}{INJECTED_USER_MESSAGE_ID_SUFFIX}",
                 name=original.name,
                 additional_kwargs=original.additional_kwargs,
             )
         )
         return messages
 
-    def _inject(self, state) -> dict | None:
+    def _inject(self, state, runtime: Runtime | None = None) -> dict | None:
         messages = list(state.get("messages", []))
         if not messages:
             return None
 
-        current_date = datetime.now().strftime("%Y-%m-%d, %A")
+        current_date = _format_current_date()
         last_date = _last_injected_date(messages)
         logger.debug(
             "DynamicContextMiddleware._inject: msg_count=%d last_date=%r current_date=%r",
@@ -255,16 +463,26 @@ class DynamicContextMiddleware(AgentMiddleware):
 
         if last_date is None:
             # ── First turn: inject full reminder as a SystemMessage ─────
-            first_idx = next((i for i, m in enumerate(messages) if _is_user_injection_target(m)), None)
-            if first_idx is None:
+            #
+            # Scan from the end so the reminder attaches to the LAST user
+            # injection target.  Normally that is also the only message.  But
+            # when an earlier turn ended without any reminder — e.g. the async
+            # ``abefore_agent`` degraded path skipped injection on a timeout —
+            # history already holds multiple turns and the ID-swap's
+            # ``{id}__user`` copy is APPENDED by ``add_messages``; choosing an
+            # earlier message here would move the old first user prompt to the
+            # tail, ahead of the latest question, and the model would answer
+            # the stale first message as if it were the current turn.
+            target_idx = next((i for i in reversed(range(len(messages))) if _is_user_injection_target(messages[i])), None)
+            if target_idx is None:
                 return None
-            date_reminder, memory_block = self._build_full_reminder()
+            date_reminder, memory_block = self._build_full_reminder(runtime)
             logger.info(
-                "DynamicContextMiddleware: injecting full reminder (has_memory=%s) into first HumanMessage id=%r",
+                "DynamicContextMiddleware: injecting full reminder (has_memory=%s) into last HumanMessage id=%r",
                 memory_block is not None,
-                messages[first_idx].id,
+                messages[target_idx].id,
             )
-            result_msgs = self._make_reminder_and_user_messages(messages[first_idx], date_reminder, memory_block, reminder_date=current_date)
+            result_msgs = self._make_reminder_and_user_messages(messages[target_idx], date_reminder, memory_block, reminder_date=current_date)
             return {"messages": result_msgs}
 
         if last_date == current_date:
@@ -282,7 +500,7 @@ class DynamicContextMiddleware(AgentMiddleware):
 
     @override
     def before_agent(self, state, runtime: Runtime) -> dict | None:
-        result = self._inject(state)
+        result = self._inject(state, runtime)
         self._record_effective_memory(state, result, runtime)
         return result
 
@@ -301,7 +519,7 @@ class DynamicContextMiddleware(AgentMiddleware):
         # rather than hanging. Frozen context already in state remains active.
         try:
             result = await asyncio.wait_for(
-                asyncio.to_thread(self._inject, state),
+                asyncio.to_thread(self._inject, state, runtime),
                 timeout=_INJECT_TIMEOUT_SECONDS,
             )
         except TimeoutError:

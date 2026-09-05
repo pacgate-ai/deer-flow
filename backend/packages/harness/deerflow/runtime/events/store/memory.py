@@ -9,6 +9,7 @@ from __future__ import annotations
 import bisect
 from datetime import UTC, datetime
 
+from deerflow.runtime.events.message_identity import message_identity
 from deerflow.runtime.events.store.base import RunEventStore
 from deerflow.runtime.user_context import AUTO, _AutoSentinel
 
@@ -93,6 +94,35 @@ class MemoryRunEventStore(RunEventStore):
             results.append(record)
         return results
 
+    async def put_if_absent(
+        self,
+        *,
+        thread_id,
+        run_id,
+        event_type,
+        category,
+        content="",
+        metadata=None,
+        created_at=None,
+    ):
+        # No await occurs between the lookup and append, so this is atomic for
+        # the backend's documented single-event-loop concurrency model.
+        for event in self._events_by_run.get(thread_id, {}).get(run_id, []):
+            if event["event_type"] == event_type:
+                return event, False
+        return (
+            self._put_one(
+                thread_id=thread_id,
+                run_id=run_id,
+                event_type=event_type,
+                category=category,
+                content=content,
+                metadata=metadata,
+                created_at=created_at,
+            ),
+            True,
+        )
+
     async def list_messages(self, thread_id, *, limit=50, before_seq=None, after_seq=None, user_id: str | None | _AutoSentinel = AUTO):
         # ``messages`` is messages-only and seq-sorted, so the seq window is a
         # contiguous slice located with bisect (O(log m)) rather than a full scan.
@@ -150,6 +180,26 @@ class MemoryRunEventStore(RunEventStore):
 
     async def count_messages(self, thread_id):
         return len(self._messages.get(thread_id, []))
+
+    async def get_message_seqs(self, thread_id, identities, *, user_id: str | None | _AutoSentinel = AUTO):
+        wanted = set(identities)
+        if not wanted:
+            return {}
+        found: dict[str, int] = {}
+        for record in self._messages.get(thread_id, []):
+            content = record.get("content")
+            if not isinstance(content, dict):
+                continue
+            identity = message_identity(content)
+            # Earliest seq wins: a message replaced later in the same thread
+            # keeps the position it first occupied in the feed.
+            if identity in wanted and identity not in found:
+                found[identity] = record["seq"]
+                # Later rows can only be re-persisted copies that already lose
+                # that tiebreak, so the scan ends with the last wanted seq.
+                if len(found) == len(wanted):
+                    break
+        return found
 
     async def delete_by_thread(self, thread_id):
         events = self._events.pop(thread_id, [])

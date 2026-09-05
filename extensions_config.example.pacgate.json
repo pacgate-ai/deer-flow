@@ -1,0 +1,204 @@
+{
+  "middlewares": [],
+  "mcpInterceptors": [],
+  "mcpServers": {
+    "yuandian-law": {
+      "enabled": true,
+      "type": "http",
+      "url": "https://open.chineselaw.com/mcp/law",
+      "headers": {
+        "Authorization": "Bearer $YUANDIAN_API_KEY"
+      },
+      "description": "元典 — 法律检索 (法规、法条、司法解释)",
+      "tool_call_timeout": 60,
+      "routing": {
+        "mode": "prefer",
+        "priority": 80,
+        "keywords": ["元典", "法规", "法条", "司法解释", "法律检索", "yuandian", "law"]
+      }
+    },
+    "yuandian-case": {
+      "enabled": true,
+      "type": "http",
+      "url": "https://open.chineselaw.com/mcp/case",
+      "headers": {
+        "Authorization": "Bearer $YUANDIAN_API_KEY"
+      },
+      "description": "元典 — 案例检索 (裁判文书、案例库)",
+      "tool_call_timeout": 60,
+      "routing": {
+        "mode": "prefer",
+        "priority": 80,
+        "keywords": ["元典", "案例", "裁判文书", "判例", "yuandian", "case"]
+      }
+    },
+    "yuandian-company": {
+      "enabled": true,
+      "type": "http",
+      "url": "https://open.chineselaw.com/mcp/company",
+      "headers": {
+        "Authorization": "Bearer $YUANDIAN_API_KEY"
+      },
+      "description": "元典 — 企业信息 (工商登记、关联企业)",
+      "tool_call_timeout": 60,
+      "routing": {
+        "mode": "prefer",
+        "priority": 70,
+        "keywords": ["元典", "企业信息", "工商", "关联企业", "yuandian", "company"]
+      }
+    },
+    "pkulaw": {
+      "enabled": true,
+      "type": "http",
+      "url": "https://www.pkulaw.com/mcp",
+      "headers": {
+        "Authorization": "Bearer $PKULAW_BEARER_TOKEN"
+      },
+      "description": "北大法宝 — 法规 + 案例 + 法律实务 (综合法律数据库)",
+      "tool_call_timeout": 60,
+      "routing": {
+        "mode": "prefer",
+        "priority": 85,
+        "keywords": ["北大法宝", "pkulaw", "法规", "案例", "法律实务", "法律数据库"]
+      }
+    },
+    "qcc-company": {
+      "enabled": true,
+      "type": "http",
+      "url": "https://agent.qcc.com/mcp/company",
+      "headers": {
+        "Authorization": "Bearer $QCC_API_KEY"
+      },
+      "description": "企查查 — 工商信息 (企业基本信息、股东、注册资本)",
+      "tool_call_timeout": 60,
+      "routing": {
+        "mode": "prefer",
+        "priority": 75,
+        "keywords": ["企查查", "工商", "企业信息", "股东", "注册资本", "qcc", "company"]
+      }
+    },
+    "qcc-risk": {
+      "enabled": true,
+      "type": "http",
+      "url": "https://agent.qcc.com/mcp/risk",
+      "headers": {
+        "Authorization": "Bearer $QCC_API_KEY"
+      },
+      "description": "企查查 — 经营风险 (行政处罚、失信、被执行)",
+      "tool_call_timeout": 60,
+      "routing": {
+        "mode": "prefer",
+        "priority": 75,
+        "keywords": ["企查查", "经营风险", "行政处罚", "失信", "被执行", "qcc", "risk"]
+      }
+    },
+    "qcc-legal-case": {
+      "enabled": true,
+      "type": "http",
+      "url": "https://agent.qcc.com/mcp/legal-case",
+      "headers": {
+        "Authorization": "Bearer $QCC_API_KEY"
+      },
+      "description": "企查查 — 诉讼记录 (企业涉诉、裁判文书)",
+      "tool_call_timeout": 60,
+      "routing": {
+        "mode": "prefer",
+        "priority": 75,
+        "keywords": ["企查查", "诉讼", "涉诉", "裁判文书", "qcc", "legal-case"]
+      }
+    },
+    "qcc-document": {
+      "enabled": true,
+      "type": "http",
+      "url": "https://agent.qcc.com/mcp/document",
+      "headers": {
+        "Authorization": "Bearer $QCC_API_KEY"
+      },
+      "description": "企查查 — 企业文档 (年报、招标、专利、商标)",
+      "tool_call_timeout": 60,
+      "routing": {
+        "mode": "prefer",
+        "priority": 70,
+        "keywords": ["企查查", "企业文档", "年报", "招标", "专利", "商标", "qcc", "document"]
+      }
+    },
+    "sec-edgar": {
+      "enabled": true,
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-sec-edgar"],
+      "env": {
+        "SEC_EDGAR_USER_AGENT": "$SEC_EDGAR_USER_AGENT"
+      },
+      "description": "SEC EDGAR — 美国上市公司公开披露 (10-K, 10-Q, 8-K)",
+      "tool_call_timeout": 60,
+      "routing": {
+        "mode": "prefer",
+        "priority": 60,
+        "keywords": ["SEC", "EDGAR", "10-K", "10-Q", "8-K", "上市公司", "sec-edgar"]
+      }
+    },
+    "officecli": {
+      "enabled": true,
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-officecli"],
+      "env": {},
+      "description": "OfficeCLI — Word/Excel/PPT 自动化 (docx/xlsx/pptx 生成与编辑)",
+      "tool_call_timeout": 120,
+      "routing": {
+        "mode": "prefer",
+        "priority": 50,
+        "keywords": ["docx", "xlsx", "pptx", "Word", "Excel", "PowerPoint", "officecli", "文档生成"]
+      }
+    },
+    "openviking": {
+      "enabled": true,
+      "type": "http",
+      "url": "http://openviking:1933/mcp",
+      "headers": {
+        "Authorization": "Bearer $OPENVIKING_API_KEY"
+      },
+      "description": "OpenViking — 上下文数据库 + RAG (本地向量检索, matter-isolation via URI scoping)",
+      "tool_call_timeout": 30,
+      "routing": {
+        "mode": "prefer",
+        "priority": 90,
+        "keywords": ["OpenViking", "向量检索", "RAG", "上下文", "context", "embedding", "openviking"]
+      }
+    },
+    "courtlistener": {
+      "enabled": false,
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-courtlistener"],
+      "env": {
+        "COURTLISTENER_API_KEY": "$COURTLISTENER_API_KEY"
+      },
+      "description": "CourtListener — 美国判例检索 (disabled in MVP; enable for US litigation support)",
+      "tool_call_timeout": 60,
+      "routing": {
+        "mode": "off",
+        "priority": 0,
+        "keywords": ["CourtListener", "美国判例", "case law", "courtlistener"]
+      }
+    },
+    "vaquill": {
+      "enabled": false,
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-vaquill"],
+      "env": {
+        "VAQUILL_API_KEY": "$VAQUILL_API_KEY"
+      },
+      "description": "Vaquill — 法律检索 (disabled in MVP; enable for additional legal research)",
+      "tool_call_timeout": 60,
+      "routing": {
+        "mode": "off",
+        "priority": 0,
+        "keywords": ["Vaquill", "法律检索", "vaquill"]
+      }
+    }
+  },
+  "skills": {}
+}

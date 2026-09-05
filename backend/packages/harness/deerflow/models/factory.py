@@ -171,13 +171,19 @@ def _apply_stream_chunk_timeout_default(model_class: type, model_settings_from_c
     model_settings_from_config["stream_chunk_timeout"] = _DEFAULT_STREAM_CHUNK_TIMEOUT_SECONDS
 
 
-def create_chat_model(name: str | None = None, thinking_enabled: bool = False, *, app_config: AppConfig | None = None, attach_tracing: bool = True, **kwargs) -> BaseChatModel:
+def create_chat_model(name: str | None = None, thinking_enabled: bool = False, *, app_config: AppConfig | None = None, attach_tracing: bool = True, model_overrides: dict | None = None, **kwargs) -> BaseChatModel:
     """Create a chat model instance from the config.
 
     Args:
         name: The name of the model to create. If None, the first model in the config will be used.
         thinking_enabled: Enable the model's extended-thinking mode when supported.
         app_config: Explicit application config; falls back to the cached global if omitted.
+        model_overrides: Optional per-caller sampling overrides (e.g. a custom
+            agent's ``temperature`` / ``max_tokens``) layered on top of the
+            model profile. ``None`` values are ignored so an unset override
+            never clobbers a profile value. Applied before the thinking / Codex
+            transforms so provider-specific normalization (e.g. Codex dropping
+            ``max_tokens``) still governs an overridden value.
         attach_tracing: When True (default), attach tracing callbacks (Langfuse,
             LangSmith) directly to the model instance. Standalone callers — anything
             that invokes the model outside a LangGraph run that already wires tracing
@@ -213,12 +219,23 @@ def create_chat_model(name: str | None = None, thinking_enabled: bool = False, *
             "when_thinking_disabled",
             "thinking",
             "supports_vision",
+            # Runtime/UI metadata used to size the context indicator. Provider
+            # clients do not accept this as a model-constructor argument.
+            "context_window",
             # Presentation-only metadata (consumed by the console's cost
             # display) — must never reach the provider client, which would
             # forward unknown kwargs into the completion request payload.
             "pricing",
         },
     )
+    # Layer per-caller sampling overrides (e.g. a custom agent's temperature /
+    # max_tokens) on top of the profile. Ignore None so an unset override never
+    # clobbers a configured profile value. Applied here — before the thinking
+    # and Codex transforms below — so provider-specific normalization (Codex
+    # dropping max_tokens, thinking disable-paths) still governs the merged
+    # value exactly as it would a profile-native one.
+    if model_overrides:
+        model_settings_from_config.update({key: value for key, value in model_overrides.items() if value is not None})
     # Compute effective when_thinking_enabled by merging in the `thinking` shortcut field.
     # The `thinking` shortcut is equivalent to setting when_thinking_enabled["thinking"].
     has_thinking_settings = (model_config.when_thinking_enabled is not None) or (model_config.thinking is not None)
@@ -291,9 +308,28 @@ def create_chat_model(name: str | None = None, thinking_enabled: bool = False, *
         if "stream_usage" in getattr(model_class, "model_fields", {}):
             model_settings_from_config["stream_usage"] = True
 
+    # Translate the declared context window into the langchain profile so
+    # profile-dependent features (e.g. SummarizationMiddleware fraction triggers,
+    # which resolve thresholds from profile["max_input_tokens"]) work for
+    # third-party OpenAI-compatible models whose SDK ships no profile of its
+    # own (#3103). ``profile`` is a metadata-only BaseChatModel field
+    # (exclude=True) and never reaches the provider request payload. An
+    # explicit profile from a caller or model_overrides is never clobbered.
+    translate_context_window = bool(model_config.context_window) and "profile" not in kwargs and "profile" not in model_settings_from_config
+
     _warn_unknown_model_settings(model_class, name, model_settings_from_config)
 
     model_instance = model_class(**kwargs, **model_settings_from_config)
+
+    if translate_context_window:
+        # Applied *after* construction and merged into the provider's inferred
+        # profile: passing ``profile`` to the constructor would REPLACE the whole
+        # inferred metadata (tool_calling, structured_output, io capabilities,
+        # output limits) with just this one key. The declared window wins on
+        # max_input_tokens itself — the operator set it precisely because the
+        # inferred (or absent) value doesn't match their gateway.
+        inferred_profile = getattr(model_instance, "profile", None)
+        model_instance.profile = {**(inferred_profile or {}), "max_input_tokens": model_config.context_window}
 
     if attach_tracing:
         callbacks = build_tracing_callbacks()

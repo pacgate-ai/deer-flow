@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from deerflow.trace_context import DEERFLOW_TRACE_METADATA_KEY
+
 # Reserved sub-key of the run context that holds request-scoped secrets supplied
 # by the caller. Source of truth for what a skill *may* receive.
 SECRETS_CONTEXT_KEY = "secrets"
@@ -30,6 +32,25 @@ ACTIVE_SECRETS_CONTEXT_KEY = "__active_skill_secrets"
 # caller from forging an allow-all decision in its mergeable run context, so the
 # entire value must be stripped from every observable serialization surface.
 SKILL_TOOL_POLICY_DECISION_CONTEXT_KEY = "__skill_tool_policy_decision"
+
+LEGACY_AUTH_TOKEN_METADATA_KEY = "auth_token"
+
+
+class LegacyRunMetadataSecretError(ValueError):
+    """Raised when a run puts a request credential in persisted metadata."""
+
+
+def validate_run_metadata_secrets(metadata: Any) -> None:
+    """Reject the legacy credential field at run admission."""
+    if isinstance(metadata, dict) and LEGACY_AUTH_TOKEN_METADATA_KEY in metadata:
+        raise LegacyRunMetadataSecretError("Run metadata key 'auth_token' is not allowed; pass request-scoped credentials via config.context.secrets instead.")
+
+
+def redact_metadata_secrets(metadata: Any) -> Any:
+    """Return API-safe metadata without mutating historical storage objects."""
+    if not isinstance(metadata, dict):
+        return metadata
+    return {key: value for key, value in metadata.items() if key != LEGACY_AUTH_TOKEN_METADATA_KEY}
 
 
 def _string_pairs(raw: Any) -> dict[str, str]:
@@ -130,17 +151,32 @@ def redact_secret_context_keys(context: Any) -> Any:
 def redact_config_secrets(config: Any) -> Any:
     """Return a copy of a run config safe to persist or echo back to clients.
 
-    The request config (``body.config``) is stored verbatim on the run record
-    (``runs.kwargs_json``) and echoed by the run API. Strip the secret-bearing
-    keys from its ``context`` so a request-scoped secret is never persisted or
-    returned, while the live config that drives the run (built separately) keeps
-    them. Non-dict / context-less configs pass through unchanged.
+    The request config (``body.config``) would otherwise be stored verbatim on
+    the run record (``runs.kwargs_json``) and echoed by the run API. Strip secret-bearing keys
+    from its ``context`` and legacy credentials from its ``metadata`` so neither
+    protected config surface is persisted or returned, while the live config
+    that drives the run (built separately) keeps them. Ordinary metadata is
+    preserved. Non-dict configs pass through unchanged.
+
+    ``deerflow_trace_id`` is dropped from both containers as well: the id is
+    server-issued and ignored as an input, so echoing a caller-supplied one
+    back would only manufacture disagreement with the ``X-Trace-Id`` header,
+    the logs, and the run record's own stamped metadata.
     """
     if not isinstance(config, dict):
         return config
-    context = config.get("context")
-    if not isinstance(context, dict):
-        return config
+
     redacted = dict(config)
-    redacted["context"] = redact_secret_context_keys(context)
+    context = config.get("context")
+    if isinstance(context, dict):
+        scrubbed_context = redact_secret_context_keys(context)
+        scrubbed_context.pop(DEERFLOW_TRACE_METADATA_KEY, None)
+        redacted["context"] = scrubbed_context
+
+    metadata = config.get("metadata")
+    if isinstance(metadata, dict):
+        scrubbed_metadata = redact_metadata_secrets(metadata)
+        scrubbed_metadata.pop(DEERFLOW_TRACE_METADATA_KEY, None)
+        redacted["metadata"] = scrubbed_metadata
+
     return redacted
