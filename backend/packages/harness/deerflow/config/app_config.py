@@ -473,6 +473,7 @@ class AppConfig(BaseModel):
         load_subagents_config_from_dict(config.subagents.model_dump())
         load_tool_search_config_from_dict(config.tool_search.model_dump())
         load_guardrails_config_from_dict(config.guardrails.model_dump())
+        load_pacgate_config_from_dict(config.pacgate.model_dump())
         load_authorization_config_from_dict(config.authorization.model_dump())
         load_pacgate_config_from_dict(config.pacgate.model_dump())
         load_checkpointer_config_from_dict(config.checkpointer.model_dump() if config.checkpointer is not None else None)
