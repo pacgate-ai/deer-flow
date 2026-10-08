@@ -475,7 +475,6 @@ class AppConfig(BaseModel):
         load_guardrails_config_from_dict(config.guardrails.model_dump())
         load_pacgate_config_from_dict(config.pacgate.model_dump())
         load_authorization_config_from_dict(config.authorization.model_dump())
-        load_pacgate_config_from_dict(config.pacgate.model_dump())
         load_checkpointer_config_from_dict(config.checkpointer.model_dump() if config.checkpointer is not None else None)
         load_stream_bridge_config_from_dict(config.stream_bridge.model_dump() if config.stream_bridge is not None else None)
         load_acp_config_from_dict({name: agent.model_dump() for name, agent in acp_agents.items()})
