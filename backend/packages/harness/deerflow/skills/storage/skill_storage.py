@@ -291,7 +291,16 @@ class SkillStorage(ABC):
             if skill:
                 skills_by_name[skill.name] = skill
 
-        skills = list(skills_by_name.values())
+        # PacGate 2026-10-08: skill-reviewer eval fixtures live under
+        # ``*/evals/fixtures/`` and are test data, not user-facing skills.
+        # Loading them polluted the registry (5 phantom skills, one declaring
+        # an empty allowed-tools) and fed the tool-policy union. Exclude any
+        # skill whose relative path contains an ``evals/fixtures`` segment.
+        skills = [
+            s
+            for s in skills_by_name.values()
+            if "evals/fixtures" not in s.relative_path.as_posix()
+        ]
 
         # Merge enabled state from extensions config (re-read every call so
         # changes made by another process are picked up immediately).

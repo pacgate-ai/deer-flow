@@ -10,6 +10,12 @@ version: "0.1"
 author: PacGate-Law (百宸)
 allowed-tools:
   - read_file
+  - str_replace
+  - grep
+  - glob
+  - ls
+  - present_files
+  - ask_clarification
   - write_file
   - bash
   - officecli
@@ -18,6 +24,9 @@ allowed-tools:
   - yuandian-case
   - qcc-company
   - openviking
+  - pacgate
+  - firecrawl
+  - vaquill
 required-secrets:
   - YUANDIAN_API_KEY
   - PKULAW_BEARER_TOKEN

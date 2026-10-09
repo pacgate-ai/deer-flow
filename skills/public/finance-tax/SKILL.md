@@ -11,6 +11,12 @@ version: "0.1"
 author: PacGate-Law (百宸)
 allowed-tools:
   - read_file
+  - str_replace
+  - grep
+  - glob
+  - ls
+  - present_files
+  - ask_clarification
   - write_file
   - bash
   - pkulaw

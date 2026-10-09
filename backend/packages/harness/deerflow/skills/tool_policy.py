@@ -51,6 +51,24 @@ def allowed_tool_names_for_skills(skills: list[Skill]) -> set[str] | None:
     return allowed
 
 
+def _tool_matches_declaration(tool_name: str, declaration: str) -> bool:
+    """Whether a loaded tool name is covered by one allowed-tools declaration.
+
+    Declarations may be exact tool names (``bash``) or bare MCP server names
+    (``pkulaw``, ``yuandian-law``). MCP tool names are prefixed with the
+    server name with hyphens normalized to underscores
+    (``yuandian-law`` → ``yuandian_law_<tool>``, ``pacgate`` →
+    ``pacgate_pacgate_<tool>`` because the bridge server itself is named
+    ``pacgate`` and its tools carry the ``pacgate_`` tool-name prefix).
+    Match exact, or the underscore-suffixed prefix of the normalized
+    declaration, so ``qcc`` does not swallow a hypothetical ``qccother``.
+    """
+    if tool_name == declaration:
+        return True
+    normalized = declaration.replace("-", "_")
+    return tool_name.startswith(f"{normalized}_")
+
+
 def filter_tools_by_skill_allowed_tools[ToolT: NamedTool](
     tools: list[ToolT],
     skills: list[Skill],
@@ -62,4 +80,8 @@ def filter_tools_by_skill_allowed_tools[ToolT: NamedTool](
         return tools
 
     allowed_with_framework_tools = allowed | set(always_allowed_tool_names)
-    return [tool for tool in tools if tool.name in allowed_with_framework_tools]
+    return [
+        tool
+        for tool in tools
+        if any(_tool_matches_declaration(tool.name, declaration) for declaration in allowed_with_framework_tools)
+    ]
