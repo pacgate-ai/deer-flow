@@ -9,13 +9,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from deerflow.persistence.models.run_event import RunEventRow
+from deerflow.runtime.events.message_identity import message_identity
 from deerflow.runtime.events.store.base import RunEventStore
 from deerflow.runtime.user_context import AUTO, _AutoSentinel, get_current_user, resolve_user_id
 from deerflow.utils.time import coerce_iso
@@ -103,6 +105,30 @@ class DbRunEventStore(RunEventStore):
         """
         user = get_current_user()
         return str(user.id) if user is not None else None
+
+    #: Characters json.dumps escapes in the stored content (``ensure_ascii``
+    #: is False, so non-ASCII survives verbatim and stays matchable).
+    _LIKE_UNSAFE_ID = re.compile(r'["\\\x00-\x1f]')
+
+    @classmethod
+    def _prefilter_substrings(cls, wanted: set[str]) -> list[str] | None:
+        """Return the raw ids to LIKE-match in ``content``, or ``None`` to full-scan.
+
+        An identity is ``kind:raw_id`` and the raw id appears verbatim in the
+        stored JSON string (``u1`` is a substring of a re-keyed ``u1__user``
+        copy too), so a row not containing any wanted id cannot resolve any
+        wanted identity. An id json.dumps would escape breaks that verbatim
+        guarantee — one such id falls the whole set back to the full scan
+        rather than silently missing it. LIKE wildcards are escaped, not
+        rejected.
+        """
+        ids = []
+        for identity in wanted:
+            _kind, _sep, raw_id = identity.partition(":")
+            if not raw_id or cls._LIKE_UNSAFE_ID.search(raw_id):
+                return None
+            ids.append(raw_id)
+        return ids
 
     @staticmethod
     async def _max_seq_for_thread(session: AsyncSession, thread_id: str) -> int | None:
@@ -193,6 +219,59 @@ class DbRunEventStore(RunEventStore):
                         session.add(row)
                         rows.append(row)
                 return [self._row_to_dict(r) for r in rows]
+
+    async def put_if_absent(
+        self,
+        *,
+        thread_id,
+        run_id,
+        event_type,
+        category,
+        content="",
+        metadata=None,
+        created_at=None,
+    ):
+        """Idempotently insert a run-scoped singleton event.
+
+        ``_max_seq_for_thread`` takes the same PostgreSQL advisory lock used by
+        every normal writer (and the in-process lock covers SQLite), so the
+        existence check cannot race another ``put_if_absent`` or journal write.
+        Terminal delivery receipts use this method on both the worker and
+        recovery paths; ordinary event types remain append-only.
+        """
+        content, metadata = self._truncate_trace(category, content, metadata)
+        db_content, metadata = self._content_to_db(content, metadata)
+        user_id = self._user_id_from_context()
+        async with self._get_write_lock(thread_id):
+            async with self._sf() as session:
+                async with session.begin():
+                    max_seq = await self._max_seq_for_thread(session, thread_id)
+                    stmt = (
+                        select(RunEventRow)
+                        .where(
+                            RunEventRow.thread_id == thread_id,
+                            RunEventRow.run_id == run_id,
+                            RunEventRow.event_type == event_type,
+                        )
+                        .order_by(RunEventRow.seq.asc())
+                        .limit(1)
+                    )
+                    existing = await session.scalar(stmt)
+                    if existing is not None:
+                        return self._row_to_dict(existing), False
+                    row = RunEventRow(
+                        thread_id=thread_id,
+                        run_id=run_id,
+                        user_id=user_id,
+                        event_type=event_type,
+                        category=category,
+                        content=db_content,
+                        event_metadata=metadata,
+                        seq=(max_seq or 0) + 1,
+                        created_at=datetime.fromisoformat(created_at) if created_at else datetime.now(UTC),
+                    )
+                    session.add(row)
+                return self._row_to_dict(row), True
 
     async def list_messages(
         self,
@@ -334,6 +413,62 @@ class DbRunEventStore(RunEventStore):
             stmt = stmt.where(RunEventRow.user_id == resolved_user_id)
         async with self._sf() as session:
             return await session.scalar(stmt) or 0
+
+    async def get_message_seqs(
+        self,
+        thread_id,
+        identities,
+        *,
+        user_id: str | None | _AutoSentinel = AUTO,
+    ):
+        wanted = set(identities)
+        if not wanted:
+            return {}
+        resolved_user_id = resolve_user_id(user_id, method_name="DbRunEventStore.get_message_seqs")
+        # ``content`` is a TEXT column holding a JSON *string* (see
+        # ``_content_to_db``), not a JSON column, so the identity fields cannot
+        # be projected in SQL — matching rows are decoded here instead. The
+        # ``content`` column carries full tool outputs, and a wanted identity
+        # absent from the feed (a message still streaming) defeats the early
+        # exit below — so without a prefilter a `/state`/`/history` read of a
+        # long thread pays a full fetch-and-decode of every message row. The
+        # LIKE prefilter keeps that cost in SQL: only rows containing a wanted
+        # id as a raw substring are fetched (false positives are re-checked by
+        # ``message_identity``; ids the prefilter cannot express fall back to
+        # the full scan).
+        stmt = select(RunEventRow.seq, RunEventRow.content).where(RunEventRow.thread_id == thread_id, RunEventRow.category == "message").order_by(RunEventRow.seq)
+        if resolved_user_id is not None:
+            stmt = stmt.where(RunEventRow.user_id == resolved_user_id)
+        prefilter_ids = self._prefilter_substrings(wanted)
+        if prefilter_ids is not None:
+            stmt = stmt.where(or_(*[RunEventRow.content.like(f"%{i.replace('%', '\\%').replace('_', '\\_')}%", escape="\\") for i in prefilter_ids]))
+
+        found: dict[str, int] = {}
+        async with self._sf() as session:
+            result = await session.execute(stmt)
+            for seq, raw in result:
+                # Plain-text content (never a message dict) is skipped without
+                # paying for a failed JSON parse.
+                if not isinstance(raw, str) or not raw.startswith("{"):
+                    continue
+                try:
+                    content = json.loads(raw)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if not isinstance(content, dict):
+                    continue
+                identity = message_identity(content)
+                # Earliest seq wins: a message re-persisted later keeps the
+                # position it first occupied in the feed.
+                if identity in wanted and identity not in found:
+                    found[identity] = seq
+                    # Later rows can only be re-persisted copies that already
+                    # lose that tiebreak, so the scan (and its JSON decoding)
+                    # ends with the last wanted seq instead of the thread's
+                    # full message count.
+                    if len(found) == len(wanted):
+                        break
+        return found
 
     async def delete_by_thread(
         self,

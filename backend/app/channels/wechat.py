@@ -8,6 +8,7 @@ import binascii
 import hashlib
 import json
 import logging
+import math
 import mimetypes
 import secrets
 import tempfile
@@ -667,7 +668,9 @@ class WechatChannel(Channel):
         )
         inbound.topic_id = None
         inbound = await self._attach_connection_identity(inbound)
-        await self.bus.publish_inbound(inbound)
+        # The iLink poll loop processes updates sequentially on the Gateway
+        # loop, so no provider-side task needs a pre-handoff reservation.
+        await self._publish_inbound_or_drop(inbound)
 
     async def _attach_connection_identity(self, inbound: InboundMessage) -> InboundMessage:
         return await attach_connection_identity(
@@ -1456,9 +1459,10 @@ class WechatChannel(Channel):
     @staticmethod
     def _coerce_float(value: Any, default: float) -> float:
         try:
-            return float(value)
-        except (TypeError, ValueError):
+            parsed = float(value)
+        except (OverflowError, TypeError, ValueError):
             return default
+        return parsed if math.isfinite(parsed) and parsed > 0 else default
 
     @staticmethod
     def _coerce_int(value: Any, default: int) -> int:

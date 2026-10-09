@@ -1,0 +1,74 @@
+# PacGate-Law Production Docker Compose
+#
+# Usage:
+#   1. Copy config.example.pacgate.yaml → config.yaml and fill in real values
+#   2. Copy .env.example.pacgate → .env and fill in API keys
+#   3. Copy extensions_config.json (from config bundle)
+#   4. Copy agents/ directory (from config bundle, 5 role-tier agents)
+#   5. docker compose -f docker/docker-compose.prod.yaml up -d
+#   6. Open http://localhost:2026
+#
+# To update: docker compose -f docker/docker-compose.prod.yaml pull && docker compose -f docker/docker-compose.prod.yaml up -d
+#
+# No build step required — the image is pre-built and published to GHCR.
+
+services:
+  pacgate:
+    image: ghcr.io/jzkk720/deer-flow-pacgate:latest
+    container_name: pacgate-law
+    ports:
+      - "2026:2026"
+      - "8001:8001"
+      - "3000:3000"
+    volumes:
+      # Config files (client-provided, gitignored)
+      - ../config.yaml:/app/config/config.yaml:ro
+      - ../extensions_config.json:/app/config/extensions_config.json:ro
+      - ../.env:/app/config/.env:ro
+      # Agent templates (client-provided, gitignored)
+      - ../.deer-flow/users/default/agents:/app/agents:ro
+      # Persistent data (SQLite DB, thread data, logs)
+      - pacgate-data:/app/data
+      # Documents (agent-generated files)
+      - ../.deer-flow/documents:/mnt/documents
+      # .deer-flow directory (for agent SOUL.md resolution)
+      - ../.deer-flow:/app/deer-flow-home
+    environment:
+      - DEER_FLOW_PROJECT_ROOT=/app
+      - DEER_FLOW_HOME=/app/data
+      - DEER_FLOW_CONFIG_PATH=/app/config/config.yaml
+      - DEER_FLOW_EXTENSIONS_CONFIG_PATH=/app/config/extensions_config.json
+      - DEER_FLOW_STREAM_BRIDGE_REDIS_URL=redis://redis:6379/0
+      - NO_PROXY=localhost,127.0.0.1,::1,redis,host.docker.internal
+      - no_proxy=localhost,127.0.0.1,::1,redis,host.docker.internal
+    env_file:
+      - ../.env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: pacgate-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - pacgate-net
+    restart: unless-stopped
+
+volumes:
+  pacgate-data:
+  redis-data:
+
+networks:
+  pacgate-net:
+    driver: bridge
